@@ -1,0 +1,58 @@
+{
+  "name": "@realsteve-afk/codeforge-cli",
+  "version": "0.3.38",
+  "description": "CodeForge CLI — CodeForge · Forge ahead.",
+  "license": "MIT",
+  "homepage": "https://www.codeforge.dev",
+  "bugs": {
+    "url": "https://github.com/RealSteve-afk/codeforge-cli/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RealSteve-afk/codeforge-cli.git"
+  },
+  "keywords": [
+    "codeforge",
+    "cli",
+    "tui"
+  ],
+  "bin": {
+    "codeforge": "dist/main.js"
+  },
+  "main": "dist/main.js",
+  "files": [
+    "dist",
+    "scripts/postinstall.js",
+    "scripts/install-pager.js",
+    "scripts/ensure-cli-path.js"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "@realsteve-afk/codeforge-pager-darwin-arm64": "0.3.38",
+    "@realsteve-afk/codeforge-pager-darwin-x64": "0.3.38",
+    "@realsteve-afk/codeforge-pager-linux-arm64": "0.3.38",
+    "@realsteve-afk/codeforge-pager-linux-x64": "0.3.38",
+    "@realsteve-afk/codeforge-pager-win32-x64": "0.3.38"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepack": "tsc",
+    "prepublishOnly": "npm test",
+    "postinstall": "node scripts/postinstall.js",
+    "version": "node scripts/sync-pager-versions.cjs && git add package.json",
+    "test": "jest --runInBand",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.2.0",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.12",
+    "typescript": "^5.9.3"
+  }
+}
