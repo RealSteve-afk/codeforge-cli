@@ -45,6 +45,9 @@
           <input id="session-title" class="session-title" aria-label="Session title" spellcheck="false">
           <div id="session-meta" class="muted small"></div>
         </div>
+        <button id="model-button" class="model-button" title="Change model">
+          <span class="dot" id="model-dot"></span><span id="model-label">Model</span><span aria-hidden="true">▾</span>
+        </button>
         <div class="mode-toggle" role="group" aria-label="Approval mode">
           <button data-mode="ask" title="Approve every file change and command">Ask</button>
           <button data-mode="auto" title="Run tools without asking">Auto</button>
@@ -59,7 +62,14 @@
         </div>
       </div>
 
+      <div id="statusbar" class="statusbar hidden" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="status-text" class="status-text">Working…</span>
+        <span id="status-meta" class="muted small"></span>
+      </div>
+
       <form id="composer" class="composer">
+        <button type="button" id="web-toggle" class="web-toggle" title="Let the agent search and read the web" aria-pressed="true">🌐 Web</button>
         <textarea id="prompt" rows="1" placeholder="Message the agent…" title="Enter to send · Shift+Enter for a new line"></textarea>
         <button id="send" class="primary" type="submit">Send</button>
         <button id="stop" class="danger hidden" type="button">Stop</button>
@@ -72,6 +82,8 @@
     <form id="new-session-form" method="dialog">
       <h2>New session</h2>
       <label>Profile <select name="profileId" required></select></label>
+      <label>Model <input name="model" list="model-options" placeholder="Profile default"></label>
+      <datalist id="model-options"></datalist>
       <label>Workspace folder <input name="workspace" placeholder="/path/to/project"></label>
       <p class="muted small" id="workspace-hint"></p>
       <label>Approval mode
@@ -97,6 +109,7 @@
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="profiles" class="active">Provider profiles</button>
       <button role="tab" data-tab="account">Account</button>
+      <button role="tab" data-tab="web" id="web-tab">Web search</button>
       <button role="tab" data-tab="users" id="users-tab">Users</button>
     </div>
 
@@ -146,6 +159,23 @@
       </form>
     </div>
 
+    <div class="tab hidden" data-panel="web">
+      <form id="search-form" class="stack">
+        <p class="muted small">Claude profiles search the web with Anthropic's built-in web search (billed by Anthropic per search). Other providers use the backend below. Reading pages works without a backend.</p>
+        <label>Search backend
+          <select name="provider">
+            <option value="none">None (search only with Claude profiles)</option>
+            <option value="brave">Brave Search API</option>
+            <option value="searxng">SearXNG (self-hosted)</option>
+          </select>
+        </label>
+        <label>Base URL (SearXNG) <input name="baseUrl" placeholder="http://localhost:8080"></label>
+        <label>API key (Brave) <input name="apiKey" type="password" autocomplete="off" placeholder="Stored encrypted; leave blank to keep"></label>
+        <p class="small" id="search-msg"></p>
+        <div class="row end"><button class="primary">Save</button></div>
+      </form>
+    </div>
+
     <div class="tab hidden" data-panel="users">
       <div id="user-list" class="list"></div>
       <form id="user-form" class="stack">
@@ -162,6 +192,18 @@
         <div class="row end"><button class="primary">Create user</button></div>
       </form>
     </div>
+  </dialog>
+
+  <!-- Model picker -->
+  <dialog id="model-dialog" class="card dialog wide-dialog">
+    <div class="dialog-head">
+      <h2>Choose a model</h2>
+      <button class="icon-btn" id="close-models" title="Close">✕</button>
+    </div>
+    <p class="muted small">Switch any time. The conversation carries over; moving to another provider keeps the text and tool log but not the model's private reasoning.</p>
+    <input id="model-filter" placeholder="Filter models…" aria-label="Filter models">
+    <div id="model-groups" class="model-groups"></div>
+    <p class="error hidden" id="model-error"></p>
   </dialog>
 
   <script src="app.js"></script>

@@ -22,6 +22,7 @@ function context(history: unknown[], events: AgentEvent[], calls: ToolCall[]): T
     },
     emit: (event: AgentEvent) => events.push(event),
     signal: new AbortController().signal,
+    web: false,
   }
   return ctx
 }
@@ -47,7 +48,10 @@ test('anthropic provider streams, runs tools and sends results back with the SDK
 
     const first = fake.requests[0].body
     assert.equal(first.model, 'claude-opus-5-5')
-    assert.deepEqual(first.thinking, { type: 'adaptive', display: 'summarized' })
+    // Opus 5.5 returns progress updates between tool calls instead of reasoning summaries.
+    assert.deepEqual(first.thinking, { type: 'adaptive', display: 'updates' })
+    assert.match(String(fake.requests[0].headers['anthropic-beta']), /thinking-display-updates-2026-08-18/)
+    assert.equal(first.tools.some((t: { name: string }) => t.name === 'web_search'), false)
     assert.deepEqual(first.output_config, { effort: 'high' })
     assert.equal(first.tools[0].eager_input_streaming, true)
     assert.equal(first.tools[0].input_schema.type, 'object')
@@ -87,6 +91,41 @@ test('anthropic provider requests the server-side refusal fallback on the Claude
     await provider.runTurn('hello', context([], [], []))
     assert.equal(fake.requests[0].body.fallbacks, 'default')
     assert.match(String(fake.requests[0].headers['anthropic-beta']), /server-side-fallback-2026-07-01/)
+  } finally {
+    fake.close()
+  }
+})
+
+test('anthropic provider uses server-side web tools and turns them into web cards and progress notes', async () => {
+  const fake = await fakeSseServer([
+    [
+      anthropicSse.start(),
+      ...anthropicSse.progress(0, 'Checking the latest release notes.'),
+      ...anthropicSse.webSearch(1, 'srvtoolu_1', 'node 24 release date', [{ title: 'Node.js releases', url: 'https://nodejs.org/en/about/previous-releases' }]),
+      ...anthropicSse.text(3, 'Node 24 shipped in May 2025.'),
+      ...anthropicSse.end('end_turn'),
+    ],
+  ])
+  try {
+    const provider = anthropicProvider({ apiKey: 'k', model: 'claude-opus-5-5', baseUrl: fake.url, thinking: true, fallbacks: false })
+    const events: AgentEvent[] = []
+    const ctx = { ...context([], events, []), web: true }
+    assert.equal(await provider.runTurn('when did node 24 ship?', ctx), 'end_turn')
+
+    const tools = fake.requests[0].body.tools as Array<{ type?: string; name: string; eager_input_streaming?: boolean }>
+    assert.deepEqual(
+      tools.filter((t) => t.type).map((t) => t.type),
+      ['web_search_20260209', 'web_fetch_20260209'],
+    )
+    assert.equal(tools.find((t) => t.type === 'web_search_20260209')?.eager_input_streaming, undefined)
+    assert.deepEqual(events.find((e) => e.type === 'progress'), { type: 'progress', text: 'Checking the latest release notes.' })
+    assert.ok(events.some((e) => e.type === 'status' && e.text === 'Searching the web…'))
+    assert.deepEqual(events.find((e) => e.type === 'web'), { type: 'web', id: 'srvtoolu_1', action: 'search', query: 'node 24 release date' })
+    assert.deepEqual(events.find((e) => e.type === 'web_result'), {
+      type: 'web_result',
+      id: 'srvtoolu_1',
+      results: [{ title: 'Node.js releases', url: 'https://nodejs.org/en/about/previous-releases' }],
+    })
   } finally {
     fake.close()
   }

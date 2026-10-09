@@ -69,6 +69,26 @@ export const anthropicSse = {
     sse('content_block_delta', { index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } }),
     sse('content_block_stop', { index }),
   ],
+  progress: (index: number, text: string) => [
+    sse('content_block_start', { index, content_block: { type: 'thinking', thinking: '', signature: '' } }),
+    sse('content_block_delta', { index, delta: { type: 'thinking_delta', thinking: text } }),
+    sse('content_block_delta', { index, delta: { type: 'signature_delta', signature: 'sig' } }),
+    sse('content_block_stop', { index }),
+  ],
+  webSearch: (index: number, id: string, query: string, results: Array<{ title: string; url: string }>) => [
+    sse('content_block_start', { index, content_block: { type: 'server_tool_use', id, name: 'web_search', input: {} } }),
+    sse('content_block_delta', { index, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ query }) } }),
+    sse('content_block_stop', { index }),
+    sse('content_block_start', {
+      index: index + 1,
+      content_block: {
+        type: 'web_search_tool_result',
+        tool_use_id: id,
+        content: results.map((r) => ({ type: 'web_search_result', title: r.title, url: r.url, encrypted_content: 'enc', page_age: null })),
+      },
+    }),
+    sse('content_block_stop', { index: index + 1 }),
+  ],
   end: (stopReason: string) => [
     sse('message_delta', { delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 5 } }),
     sse('message_stop', {}),

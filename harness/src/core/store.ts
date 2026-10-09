@@ -2,6 +2,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { decryptSecret, encryptSecret, hashPassword, loadMasterKey, randomToken, sha256, verifyPassword } from './crypto'
+import type { PlanItem } from './tools'
+import type { SearchConfig, SearchProvider } from './web'
 
 export type ProviderKind = 'anthropic' | 'openai'
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -40,6 +42,24 @@ export type TranscriptItem =
   | { kind: 'tool_result'; id: string; output: string; isError: boolean }
   | { kind: 'notice'; text: string }
   | { kind: 'error'; text: string }
+  | { kind: 'progress'; text: string }
+  | { kind: 'web'; id: string; action: 'search' | 'fetch'; query?: string; url?: string; results?: WebHit[]; title?: string; error?: string }
+  | { kind: 'plan'; items: PlanItem[] }
+  | { kind: 'question'; id: string; question: string; options: string[]; answer?: string }
+  | { kind: 'summary'; seconds: number; steps: number; stopReason: string; inputTokens: number; outputTokens: number }
+
+export interface WebHit {
+  title: string
+  url: string
+}
+
+export interface PublicSettings {
+  search: { provider: SearchProvider; baseUrl?: string; hasKey: boolean }
+}
+
+interface StoredSettings {
+  search: { provider: SearchProvider; baseUrl?: string; apiKeySealed?: string }
+}
 
 export interface Session {
   id: string
@@ -50,6 +70,8 @@ export interface Session {
   title: string
   workspace: string
   mode: PermissionMode
+  // Whether the agent may search and read the web. Missing on older sessions means on.
+  web?: boolean
   // Provider-native message history, append-only (see agent.ts).
   history: unknown[]
   transcript: TranscriptItem[]
@@ -286,6 +308,42 @@ export class Store {
     profile.apiKeyHint = key.length > 8 ? `…${key.slice(-4)}` : '…'
   }
 
+  // ---- server settings -----------------------------------------------------
+
+  private settings(): StoredSettings {
+    return readJson<StoredSettings>(this.file('settings.json'), { search: { provider: 'none' } })
+  }
+
+  publicSettings(): PublicSettings {
+    const { search } = this.settings()
+    return { search: { provider: search.provider, baseUrl: search.baseUrl, hasKey: Boolean(search.apiKeySealed) } }
+  }
+
+  searchConfig(): SearchConfig | undefined {
+    const { search } = this.settings()
+    if (search.provider === 'none') return undefined
+    return { provider: search.provider, baseUrl: search.baseUrl, apiKey: search.apiKeySealed ? decryptSecret(search.apiKeySealed, this.key) : undefined }
+  }
+
+  updateSettings(patch: { search?: { provider?: SearchProvider; baseUrl?: string; apiKey?: string } }): PublicSettings {
+    const settings = this.settings()
+    if (patch.search) {
+      const provider = patch.search.provider ?? settings.search.provider
+      if (!['none', 'brave', 'searxng'].includes(provider)) throw new UserError('search provider must be none, brave or searxng')
+      const baseUrl = patch.search.baseUrl !== undefined ? patch.search.baseUrl.trim() || undefined : settings.search.baseUrl
+      if (baseUrl && !/^https?:\/\//.test(baseUrl)) throw new UserError('base URL must start with http:// or https://')
+      settings.search = {
+        provider,
+        baseUrl,
+        apiKeySealed: patch.search.apiKey ? encryptSecret(patch.search.apiKey.trim(), this.key) : settings.search.apiKeySealed,
+      }
+      if (provider === 'searxng' && !baseUrl) throw new UserError('SearXNG needs a base URL')
+      if (provider === 'brave' && !settings.search.apiKeySealed) throw new UserError('Brave Search needs an API key')
+    }
+    writeJson(this.file('settings.json'), settings)
+    return this.publicSettings()
+  }
+
   // ---- sessions ----------------------------------------------------------
 
   private sessionFile(userId: string, id: string): string {
@@ -293,7 +351,7 @@ export class Store {
     return path.join(this.dataDir, 'sessions', userId, `${id}.json`)
   }
 
-  createSession(user: PublicUser, input: { profileId: string; workspace?: string; title?: string; mode?: PermissionMode }): Session {
+  createSession(user: PublicUser, input: { profileId: string; model?: string; workspace?: string; title?: string; mode?: PermissionMode; web?: boolean }): Session {
     const profile = this.getProfile(user.id, input.profileId)
     const workspace = path.resolve(input.workspace || user.workspaceRoots[0] || process.cwd())
     if (!workspaceAllowed(user, workspace)) {
@@ -305,10 +363,11 @@ export class Store {
       userId: user.id,
       profileId: profile.id,
       provider: profile.provider,
-      model: profile.model,
+      model: input.model?.trim() || profile.model,
       title: input.title?.trim() || 'New session',
       workspace,
       mode: input.mode === 'auto' ? 'auto' : 'ask',
+      web: input.web ?? true,
       history: [],
       transcript: [],
       usage: { inputTokens: 0, outputTokens: 0 },

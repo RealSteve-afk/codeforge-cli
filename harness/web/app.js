@@ -135,6 +135,7 @@ async function enterApp() {
   $('#app').classList.remove('hidden')
   $('#whoami').textContent = `${state.user.username}${state.user.isAdmin ? ' · admin' : ''}`
   $('#users-tab').classList.toggle('hidden', !state.user.isAdmin)
+  $('#web-tab').classList.toggle('hidden', !state.user.isAdmin)
   await refreshProfiles()
   await refreshSessions()
   if (!state.profiles.length) {
@@ -195,9 +196,88 @@ function renderHeader() {
   const profile = state.profiles.find((p) => p.id === s.profileId)
   $('#session-title').value = s.title
   const tokens = s.usage ? ` · ${formatTokens(s.usage.inputTokens)} in / ${formatTokens(s.usage.outputTokens)} out` : ''
-  $('#session-meta').textContent = `${profile ? profile.name : 'deleted profile'} · ${s.model} · ${s.workspace}${tokens}`
+  $('#session-meta').textContent = `${s.workspace}${tokens}`
   $('#session-meta').title = $('#session-meta').textContent
+  $('#model-label').textContent = `${profile ? profile.name : 'deleted profile'} · ${s.model}`
+  $('#model-button').title = `Change model (now ${s.model} via ${profile ? profile.name : 'a deleted profile'})`
+  $('#model-dot').className = `dot ${s.provider}`
+  const web = s.web !== false
+  $('#web-toggle').setAttribute('aria-pressed', String(web))
+  $('#web-toggle').title = web ? 'Web access is on: the agent can search and read web pages' : 'Web access is off'
   for (const btn of $$('.mode-toggle button')) btn.classList.toggle('active', btn.dataset.mode === s.mode)
+}
+
+$('#web-toggle').addEventListener('click', async () => {
+  if (!state.current) return
+  const web = state.current.web === false
+  state.current = { ...state.current, ...(await api('PATCH', `/api/sessions/${state.current.id}`, { web })) }
+  renderHeader()
+})
+
+// ---------------------------------------------------------------- model picker
+
+const modelCache = new Map()
+
+async function profileModels(profile) {
+  if (!modelCache.has(profile.id)) {
+    modelCache.set(profile.id, api('GET', `/api/profiles/${profile.id}/models`).catch((err) => ({ models: [], error: err.message })))
+  }
+  return modelCache.get(profile.id)
+}
+
+$('#model-button').addEventListener('click', () => openModelPicker())
+$('#close-models').addEventListener('click', () => $('#model-dialog').close())
+$('#model-filter').addEventListener('input', () => filterModels())
+
+async function openModelPicker() {
+  if (!state.current) return
+  if (state.running) return alert('Wait for the current turn to finish, or stop it, before switching models.')
+  $('#model-error').classList.add('hidden')
+  $('#model-filter').value = ''
+  const groups = $('#model-groups')
+  groups.replaceChildren()
+  $('#model-dialog').showModal()
+  for (const profile of state.profiles) {
+    const group = el('section', { class: 'model-group' })
+    const head = el('h3')
+    head.append(el('span', { class: `dot ${profile.provider}` }), profile.name, el('span', { class: 'muted small', text: profile.provider === 'anthropic' ? 'Anthropic' : profile.baseUrl || 'OpenAI' }))
+    const list = el('div', { class: 'model-list' })
+    list.append(el('span', { class: 'muted small', text: 'Loading models…' }))
+    const custom = el('form', { class: 'custom-model' })
+    const input = el('input', { placeholder: 'Other model id…', 'aria-label': `Other model for ${profile.name}` })
+    custom.append(input, el('button', { text: 'Use' }))
+    custom.addEventListener('submit', (e) => { e.preventDefault(); if (input.value.trim()) chooseModel(profile, input.value.trim()) })
+    group.append(head, list, custom)
+    groups.append(group)
+    profileModels(profile).then(({ models, error }) => {
+      const ids = Array.from(new Set([profile.model, ...(models || [])]))
+      list.replaceChildren()
+      for (const id of ids) {
+        const current = state.current.profileId === profile.id && state.current.model === id
+        const b = el('button', { type: 'button', class: current ? 'current' : '', text: id, 'data-model': id })
+        b.addEventListener('click', () => chooseModel(profile, id))
+        list.append(b)
+      }
+      if (error) list.append(el('span', { class: 'muted small', text: 'Could not list models; type one below.' }))
+      filterModels()
+    })
+  }
+}
+
+function filterModels() {
+  const q = $('#model-filter').value.trim().toLowerCase()
+  for (const b of $$('#model-groups .model-list button')) b.classList.toggle('hidden', Boolean(q) && !b.dataset.model.toLowerCase().includes(q))
+}
+
+async function chooseModel(profile, model) {
+  try {
+    state.current = await api('POST', `/api/sessions/${state.current.id}/model`, { profileId: profile.id, model })
+    $('#model-dialog').close()
+    await openSession(state.current.id)
+  } catch (err) {
+    $('#model-error').textContent = err.message
+    $('#model-error').classList.remove('hidden')
+  }
 }
 
 $('#session-title').addEventListener('change', async (e) => {
@@ -225,6 +305,18 @@ function openNewSession() {
   select.replaceChildren(...state.profiles.map((p) => el('option', { value: p.id, text: `${p.name} — ${p.model}` })))
   const lastProfile = safeGet('harness.lastProfile')
   if (state.profiles.some((p) => p.id === lastProfile)) select.value = lastProfile
+  const fillModels = async () => {
+    const profile = state.profiles.find((p) => p.id === select.value)
+    form.elements.model.value = ''
+    form.elements.model.placeholder = profile ? `${profile.model} (profile default)` : ''
+    const list = $('#model-options')
+    list.replaceChildren()
+    if (!profile) return
+    const { models } = await profileModels(profile)
+    list.replaceChildren(...(models || []).map((id) => el('option', { value: id })))
+  }
+  select.onchange = fillModels
+  fillModels()
   const roots = state.user.workspaceRoots || []
   form.elements.workspace.value = safeGet('harness.lastWorkspace') || roots[0] || ''
   $('#workspace-hint').textContent = state.user.isAdmin
@@ -239,7 +331,12 @@ $('#new-session-form').addEventListener('submit', async (e) => {
   e.preventDefault()
   const form = e.target
   try {
-    const body = { profileId: form.elements.profileId.value, workspace: form.elements.workspace.value.trim() || undefined, mode: form.elements.mode.value }
+    const body = {
+      profileId: form.elements.profileId.value,
+      model: form.elements.model.value.trim() || undefined,
+      workspace: form.elements.workspace.value.trim() || undefined,
+      mode: form.elements.mode.value,
+    }
     const session = await api('POST', '/api/sessions', body)
     safeSet('harness.lastProfile', body.profileId)
     if (body.workspace) safeSet('harness.lastWorkspace', body.workspace)
@@ -274,6 +371,7 @@ $('#composer').addEventListener('submit', async (e) => {
   if (!state.current) return openNewSession()
   prompt.value = ''
   autosize()
+  askNotificationPermission()
   $('#empty')?.remove()
   new TurnView($('#messages')).addItem({ kind: 'user', text })
   scrollToEnd(true)
@@ -288,22 +386,92 @@ function setRunning(running) {
   state.running = running
   $('#send').classList.toggle('hidden', running)
   $('#stop').classList.toggle('hidden', !running)
+  $('#statusbar').classList.toggle('hidden', !running)
+  document.title = running ? '● Forge Harness' : 'Forge Harness'
+}
+
+// Tracks what the agent is doing right now, for the status bar.
+class Activity {
+  constructor() {
+    this.started = Date.now()
+    this.steps = 0
+    this.plan = null
+    this.text = 'Starting…'
+    this.timer = setInterval(() => this.render(), 1000)
+    this.render()
+  }
+
+  set(text) {
+    this.text = text
+    this.render()
+  }
+
+  onEvent(ev) {
+    switch (ev.type) {
+      case 'thinking': this.set('Thinking…'); break
+      case 'progress': this.set(ev.text.trim().split('\n')[0].slice(0, 160) || 'Working…'); break
+      case 'text': this.set('Writing the answer…'); break
+      case 'status': this.set(ev.text); break
+      case 'tool_call': this.steps += 1; this.set(describeActivity(ev.name, ev.input)); break
+      case 'web': this.steps += 1; this.set(ev.action === 'search' ? `Searching the web: ${ev.query || ''}` : `Reading ${ev.url || 'a web page'}`); break
+      case 'approval': this.set(`Waiting for your approval: ${ev.name}`); notify('Approval needed', `The agent wants to run ${ev.name}.`); break
+      case 'question': this.set('Waiting for your answer'); notify('The agent has a question', ev.question); break
+      case 'approval_resolved':
+      case 'question_resolved': this.set('Continuing…'); break
+      case 'plan': this.plan = ev.items; this.render(); break
+      case 'summary': notify(ev.stopReason === 'cancelled' ? 'Task cancelled' : 'Task finished', `${formatDuration(ev.seconds)} · ${ev.steps} steps`); break
+    }
+  }
+
+  render() {
+    const seconds = Math.round((Date.now() - this.started) / 1000)
+    let planText = ''
+    if (this.plan && this.plan.length) {
+      const done = this.plan.filter((i) => i.status === 'done').length
+      planText = ` · plan ${done}/${this.plan.length}`
+    }
+    $('#status-text').textContent = this.text
+    $('#status-meta').textContent = `${formatDuration(seconds)} · ${this.steps} step${this.steps === 1 ? '' : 's'}${planText}`
+  }
+
+  stop() {
+    clearInterval(this.timer)
+  }
+}
+
+function describeActivity(name, input = {}) {
+  switch (name) {
+    case 'run_command': return `Running: ${input.command || ''}`
+    case 'write_file': return `Writing ${input.path || 'a file'}`
+    case 'edit_file': return `Editing ${input.path || 'a file'}`
+    case 'read_file': return `Reading ${input.path || 'a file'}`
+    case 'list_dir': return `Looking at ${input.path || 'the workspace'}`
+    case 'search': return `Searching the code for ${input.pattern || ''}`
+    case 'web_search': return `Searching the web: ${input.query || ''}`
+    case 'web_fetch': return `Reading ${input.url || 'a web page'}`
+    case 'update_plan': return 'Updating the plan'
+    case 'ask_user': return 'Waiting for your answer'
+    default: return `Running ${name}`
+  }
 }
 
 async function consume(events) {
   const sessionId = state.current.id
   const view = new TurnView($('#messages'))
+  const activity = new Activity()
   setRunning(true)
   refreshSessions()
   try {
     for await (const event of events) {
       if (state.current?.id !== sessionId) return
+      activity.onEvent(event)
       view.addEvent(event)
       scrollToEnd()
     }
   } catch (err) {
     view.addItem({ kind: 'error', text: err.message })
   } finally {
+    activity.stop()
     setRunning(false)
     if (state.current?.id === sessionId) {
       state.current = await api('GET', `/api/sessions/${sessionId}`).catch(() => state.current)
@@ -313,6 +481,33 @@ async function consume(events) {
   }
 }
 
+// Desktop notifications when the tab is in the background.
+function askNotificationPermission() {
+  try {
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission()
+  } catch { /* not supported */ }
+}
+
+function notify(title, body) {
+  if (!document.hidden) return
+  document.title = `● ${title} — Forge Harness`
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const n = new Notification(title, { body: String(body || '').slice(0, 200), icon: 'icon.svg', tag: 'forge-harness' })
+      n.onclick = () => { window.focus(); n.close() }
+    }
+  } catch { /* not supported */ }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) document.title = state.running ? '● Forge Harness' : 'Forge Harness'
+})
+
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60)
+  return m ? `${m}m ${String(seconds % 60).padStart(2, '0')}s` : `${seconds}s`
+}
+
 // Renders transcript items (history) and live events into the message list.
 class TurnView {
   constructor(box) {
@@ -320,23 +515,36 @@ class TurnView {
     this.textEl = null
     this.textBuf = ''
     this.thinkEl = null
+    this.progressEl = null
     this.tools = new Map()
+    this.webCards = new Map()
     this.approvals = new Map()
-    this.pending = false
+    this.questions = new Map()
+    this.planEl = null
+    this.hiddenTools = new Set()
   }
 
   addItem(item) {
     switch (item.kind) {
       case 'user':
         this.reset()
+        this.planEl = null
         this.box.append(el('div', { class: 'msg-user', text: item.text }))
         break
       case 'text': this.appendText(item.text); this.textEl = null; break
       case 'thinking': this.appendThinking(item.text); this.thinkEl = null; break
+      case 'progress': this.appendProgress(item.text); this.progressEl = null; break
       case 'tool_call': this.toolCall(item.id, item.name, item.input); break
       case 'tool_result': this.toolResult(item.id, item.output, item.isError); break
       case 'notice': this.reset(); this.box.append(el('div', { class: 'notice', text: item.text })); break
       case 'error': this.reset(); this.box.append(el('div', { class: 'err-msg', text: item.text })); break
+      case 'web':
+        this.webStart(item)
+        if (item.results || item.error || item.title) this.webResult(item)
+        break
+      case 'plan': this.plan(item.items); break
+      case 'question': this.question({ questionId: item.id, question: item.question, options: item.options, allowText: true }, item.answer); break
+      case 'summary': this.summary(item); break
     }
   }
 
@@ -344,10 +552,17 @@ class TurnView {
     switch (ev.type) {
       case 'text': this.appendText(ev.text); break
       case 'thinking': this.appendThinking(ev.text); break
+      case 'progress': this.appendProgress(ev.text); break
       case 'tool_call': this.toolCall(ev.id, ev.name, ev.input); break
       case 'tool_result': this.toolResult(ev.id, ev.output, ev.isError); break
       case 'approval': this.approval(ev); break
       case 'approval_resolved': this.approvals.get(ev.approvalId)?.remove(); break
+      case 'web': this.webStart(ev); break
+      case 'web_result': this.webResult(ev); break
+      case 'plan': this.plan(ev.items); break
+      case 'question': this.question(ev); break
+      case 'question_resolved': this.questions.get(ev.questionId)?.(ev.answer); break
+      case 'summary': this.summary(ev); break
       case 'notice': this.addItem({ kind: 'notice', text: ev.text }); break
       case 'error': this.addItem({ kind: 'error', text: ev.message }); break
       case 'usage':
@@ -363,31 +578,32 @@ class TurnView {
   reset() {
     this.textEl = null
     this.thinkEl = null
+    this.progressEl = null
   }
 
   appendText(text) {
     if (!this.textEl) {
-      this.thinkEl = null
+      this.reset()
       this.textBuf = ''
       this.textEl = el('div', { class: 'msg-text' })
       this.box.append(this.textEl)
     }
     this.textBuf += text
-    // Re-render markdown at most once per frame while streaming.
-    if (!this.pending) {
-      this.pending = true
-      const target = this.textEl
+    const target = this.textEl
+    target.dataset.src = this.textBuf
+    // Re-render markdown at most once per frame per block while streaming.
+    if (!target.dataset.pending) {
+      target.dataset.pending = '1'
       requestAnimationFrame(() => {
-        this.pending = false
+        delete target.dataset.pending
         renderMarkdown(target, target.dataset.src)
       })
     }
-    this.textEl.dataset.src = this.textBuf
   }
 
   appendThinking(text) {
     if (!this.thinkEl) {
-      this.textEl = null
+      this.reset()
       const details = el('details', { class: 'thinking' })
       details.append(el('summary', { text: 'Thinking' }), el('div'))
       this.box.append(details)
@@ -396,8 +612,28 @@ class TurnView {
     this.thinkEl.textContent += text
   }
 
+  // Progress updates: the model's short notes between steps.
+  appendProgress(text) {
+    if (!this.progressEl) {
+      this.reset()
+      this.progressEl = el('div', { class: 'progress-note' })
+      this.box.append(this.progressEl)
+    }
+    this.progressEl.textContent += text
+  }
+
   toolCall(id, name, input) {
     this.reset()
+    // These tools have their own cards (plan, question).
+    if (name === 'update_plan' || name === 'ask_user') {
+      this.hiddenTools.add(id)
+      return
+    }
+    // Client-side web tools render like the built-in web tools.
+    if (name === 'web_search' || name === 'web_fetch') {
+      this.webStart({ id, action: name === 'web_search' ? 'search' : 'fetch', query: input?.query, url: input?.url })
+      return
+    }
     const card = el('details', { class: 'tool' })
     const summary = el('summary')
     summary.append(el('span', { text: '⚙' }), el('span', { class: 'name', text: name }), el('span', { class: 'arg', text: summarize(input) }), el('span', { class: 'status', text: 'running…' }))
@@ -407,12 +643,127 @@ class TurnView {
   }
 
   toolResult(id, output, isError) {
+    if (this.hiddenTools.has(id)) return
+    if (this.webCards.has(id)) {
+      const urls = (output.match(/https?:\/\/[^\s]+/g) || []).slice(0, 8)
+      const lines = output.split('\n')
+      this.webResult({
+        id,
+        error: isError ? output : undefined,
+        results: urls.map((url) => {
+          const i = lines.findIndex((l) => l.includes(url))
+          const titleLine = i > 0 ? lines[i - 1].replace(/^\d+\.\s*/, '').trim() : ''
+          return { url, title: titleLine.startsWith('#') ? titleLine.slice(1).trim() : titleLine }
+        }),
+      })
+      return
+    }
     const card = this.tools.get(id)
     if (!card) return
     const status = $('.status', card)
     status.textContent = isError ? 'failed' : 'done'
     status.className = `status ${isError ? 'err' : 'ok'}`
     card.append(el('pre', { text: output }))
+  }
+
+  webStart(ev) {
+    this.reset()
+    const card = el('div', { class: 'web-card' })
+    const head = el('div', { class: 'head' })
+    head.append(
+      el('span', { text: ev.action === 'search' ? '🔎' : '🌐' }),
+      el('strong', { text: ev.action === 'search' ? 'Searched the web' : 'Read a page' }),
+      el('span', { class: 'muted', text: ev.action === 'search' ? (ev.query ? `“${ev.query}”` : '') : ev.url || '' }),
+    )
+    const links = el('div', { class: 'links' })
+    card.append(head, links)
+    this.box.append(card)
+    this.webCards.set(ev.id, card)
+  }
+
+  webResult(ev) {
+    const card = this.webCards.get(ev.id)
+    if (!card) return
+    const links = $('.links', card)
+    links.replaceChildren()
+    if (ev.error) {
+      links.append(el('span', { class: 'error', text: `Failed: ${String(ev.error).slice(0, 200)}` }))
+      return
+    }
+    for (const r of (ev.results || []).slice(0, 6)) {
+      const row = el('div')
+      row.append(link(r.url, r.title || r.url), el('span', { class: 'host', text: hostOf(r.url) }))
+      links.append(row)
+    }
+    if (ev.results && ev.results.length > 6) links.append(el('span', { class: 'muted small', text: `+${ev.results.length - 6} more` }))
+    if (!ev.results && (ev.url || ev.title)) links.append(link(ev.url || '#', ev.title || ev.url))
+  }
+
+  plan(items) {
+    this.reset()
+    if (!this.planEl) {
+      this.planEl = el('div', { class: 'plan-card' })
+      this.box.append(this.planEl)
+    }
+    const done = items.filter((i) => i.status === 'done').length
+    const head = el('h4')
+    head.append(el('span', { text: '📋 Plan' }), el('span', { class: 'muted small', text: `${done}/${items.length} done` }))
+    const list = el('ol')
+    for (const item of items) {
+      const li = el('li', { class: item.status })
+      li.append(el('span', { text: item.status === 'done' ? '✅' : item.status === 'in_progress' ? '⏳' : '⬜' }), el('span', { text: item.text }))
+      list.append(li)
+    }
+    const bar = el('div', { class: 'plan-bar' })
+    const fill = el('span')
+    fill.style.width = `${items.length ? Math.round((done / items.length) * 100) : 0}%`
+    bar.append(fill)
+    this.planEl.replaceChildren(head, list, bar)
+  }
+
+  // A question from the agent with clickable answers.
+  question(ev, answered) {
+    this.reset()
+    const card = el('div', { class: 'question-card' })
+    card.append(el('div', { class: 'q', text: `❓ ${ev.question}` }))
+    const showAnswer = (answer) => {
+      card.replaceChildren(el('div', { class: 'q', text: `❓ ${ev.question}` }), el('div', { class: 'answer', text: answer ? `You answered: ${answer}` : 'No answer given.' }))
+    }
+    if (answered !== undefined) {
+      showAnswer(answered)
+      this.box.append(card)
+      return
+    }
+    const send = (answer) => {
+      for (const b of $$('button, input', card)) b.disabled = true
+      api('POST', `/api/sessions/${state.current.id}/answers/${ev.questionId}`, { answer }).catch((err) => this.addItem({ kind: 'error', text: err.message }))
+    }
+    if (ev.options && ev.options.length) {
+      const options = el('div', { class: 'options' })
+      ev.options.forEach((option, i) => {
+        const b = el('button', { type: 'button', class: i === 0 ? 'primary' : '', text: option })
+        b.addEventListener('click', () => send(option))
+        options.append(b)
+      })
+      card.append(options)
+    }
+    if (ev.allowText !== false) {
+      const form = el('form')
+      const input = el('input', { placeholder: ev.options?.length ? 'Or type your own answer…' : 'Type your answer…', 'aria-label': 'Your answer' })
+      form.append(input, el('button', { text: 'Send' }))
+      form.addEventListener('submit', (e) => { e.preventDefault(); if (input.value.trim()) send(input.value.trim()) })
+      card.append(form)
+    }
+    this.box.append(card)
+    this.questions.set(ev.questionId, showAnswer)
+    $('button, input', card)?.focus()
+  }
+
+  summary(ev) {
+    this.reset()
+    const icon = ev.stopReason === 'cancelled' ? '⏹' : ev.stopReason === 'error' || ev.stopReason === 'refusal' ? '⚠' : '✓'
+    const tokens = ev.inputTokens || ev.outputTokens ? ` · ${formatTokens(ev.inputTokens)} in / ${formatTokens(ev.outputTokens)} out` : ''
+    this.box.append(el('div', { class: 'summary-line', text: `${icon} ${ev.stopReason === 'cancelled' ? 'Stopped' : 'Finished'} in ${formatDuration(ev.seconds)} · ${ev.steps} step${ev.steps === 1 ? '' : 's'}${tokens}` }))
   }
 
   approval(ev) {
@@ -450,6 +801,16 @@ function describeApproval(name, input) {
   return JSON.stringify(input, null, 2)
 }
 
+function link(url, text) {
+  const a = el('a', { href: /^https?:\/\//.test(url) ? url : '#', target: '_blank', rel: 'noopener noreferrer', text })
+  a.title = url
+  return a
+}
+
+function hostOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' }
+}
+
 function summarize(input) {
   if (!input || typeof input !== 'object') return ''
   if (input.command) return input.command
@@ -468,7 +829,10 @@ for (const tab of $$('.tabs button')) tab.addEventListener('click', () => showTa
 function openSettings(tab) {
   renderProfiles()
   resetProfileForm()
-  if (state.user.isAdmin) renderUsers()
+  if (state.user.isAdmin) {
+    renderUsers()
+    loadSearchSettings()
+  }
   showTab(tab)
   if (!$('#settings').open) $('#settings').showModal()
 }
@@ -575,6 +939,33 @@ $('#password-form').addEventListener('submit', async (e) => {
     await api('POST', '/api/me/password', { currentPassword: f.currentPassword.value, newPassword: f.newPassword.value })
     e.target.reset()
     msg.textContent = 'Password updated.'
+    msg.className = 'small'
+  } catch (err) {
+    msg.textContent = err.message
+    msg.className = 'small error'
+  }
+})
+
+async function loadSearchSettings() {
+  const { search } = await api('GET', '/api/settings')
+  const f = $('#search-form').elements
+  f.provider.value = search.provider
+  f.baseUrl.value = search.baseUrl || ''
+  f.apiKey.value = ''
+  f.apiKey.placeholder = search.hasKey ? 'A key is saved; leave blank to keep it' : 'Stored encrypted'
+  $('#search-msg').textContent = ''
+}
+
+$('#search-form').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const f = e.target.elements
+  const msg = $('#search-msg')
+  try {
+    const search = { provider: f.provider.value, baseUrl: f.baseUrl.value }
+    if (f.apiKey.value) search.apiKey = f.apiKey.value
+    await api('PATCH', '/api/settings', { search })
+    await loadSearchSettings()
+    msg.textContent = 'Saved.'
     msg.className = 'small'
   } catch (err) {
     msg.textContent = err.message

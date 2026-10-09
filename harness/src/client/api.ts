@@ -56,11 +56,14 @@ export class HarnessClient {
   profiles = () => this.request<PublicProfile[]>('GET', '/api/profiles')
   createProfile = (input: Record<string, unknown>) => this.request<PublicProfile>('POST', '/api/profiles', input)
   deleteProfile = (id: string) => this.request('DELETE', `/api/profiles/${id}`)
+  models = (profileId: string) => this.request<{ models: string[]; error?: string }>('GET', `/api/profiles/${profileId}/models`)
 
   sessions = () => this.request<Array<SessionSummary & { running: boolean }>>('GET', '/api/sessions')
   session = (id: string) => this.request<SessionView>('GET', `/api/sessions/${id}`)
   createSession = (input: { profileId: string; workspace?: string; mode?: string }) => this.request<SessionView>('POST', '/api/sessions', input)
-  updateSession = (id: string, patch: { title?: string; mode?: string }) => this.request<SessionView>('PATCH', `/api/sessions/${id}`, patch)
+  updateSession = (id: string, patch: { title?: string; mode?: string; web?: boolean }) => this.request<SessionView>('PATCH', `/api/sessions/${id}`, patch)
+  switchModel = (id: string, profileId: string, model?: string) => this.request<SessionView>('POST', `/api/sessions/${id}/model`, { profileId, model })
+  answer = (sessionId: string, questionId: string, answer: string) => this.request('POST', `/api/sessions/${sessionId}/answers/${questionId}`, { answer })
   deleteSession = (id: string) => this.request('DELETE', `/api/sessions/${id}`)
   approve = (sessionId: string, approvalId: string, allow: boolean, always = false) =>
     this.request('POST', `/api/sessions/${sessionId}/approvals/${approvalId}`, { allow, always })

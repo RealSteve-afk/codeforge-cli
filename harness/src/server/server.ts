@@ -2,6 +2,7 @@ import fs from 'fs'
 import http from 'http'
 import path from 'path'
 import { Agent, type Run } from '../core/agent'
+import { listProviderModels } from '../core/providers/models'
 import type { AgentEvent } from '../core/providers/types'
 import { NotFound, type ProfileInput, type PublicUser, Store, UserError } from '../core/store'
 
@@ -124,11 +125,28 @@ export function createServer(options: ServerOptions): http.Server {
     return { ok: true }
   })
 
+  // ---- server settings (web search backend) ----------------------------------
+
+  route('GET', '/api/settings', () => store.publicSettings())
+  route('PATCH', '/api/settings', (ctx) => {
+    admin(ctx)
+    return store.updateSettings({ search: ctx.body.search })
+  })
+
   // ---- provider profiles ---------------------------------------------------
 
   route('GET', '/api/profiles', ({ user }) => store.listProfiles(user!.id))
   route('POST', '/api/profiles', ({ user, body }) => store.createProfile(user!.id, body as ProfileInput))
   route('PATCH', '/api/profiles/:id', ({ user, body, params }) => store.updateProfile(user!.id, params.id, body as Partial<ProfileInput>))
+  route('GET', '/api/profiles/:id/models', async ({ user, params }) => {
+    const profile = store.getProfile(user!.id, params.id)
+    try {
+      return { models: await listProviderModels(profile, store.profileApiKey(user!.id, params.id)) }
+    } catch (error) {
+      // Some OpenAI-compatible servers have no models endpoint; the GUI then offers a free-text model field.
+      return { models: [], error: `could not list models: ${(error as Error).message}` }
+    }
+  })
   route('DELETE', '/api/profiles/:id', ({ user, params }) => {
     store.deleteProfile(user!.id, params.id)
     return { ok: true }
@@ -152,6 +170,7 @@ export function createServer(options: ServerOptions): http.Server {
     const session = store.getSession(user!.id, params.id)
     if (typeof body.title === 'string' && body.title.trim()) session.title = body.title.trim().slice(0, 100)
     if (body.mode === 'ask' || body.mode === 'auto') session.mode = body.mode
+    if (typeof body.web === 'boolean') session.web = body.web
     store.saveSession(session)
     const { history: _h, ...rest } = session
     return rest
@@ -174,6 +193,14 @@ export function createServer(options: ServerOptions): http.Server {
   })
   route('POST', '/api/sessions/:id/approvals/:approvalId', ({ user, params, body }) => {
     agent.resolveApproval(user!.id, params.id, params.approvalId, Boolean(body.allow), Boolean(body.always))
+    return { ok: true }
+  })
+  route('POST', '/api/sessions/:id/model', ({ user, params, body }) => {
+    const { history: _h, ...session } = agent.switchModel(user!, params.id, { profileId: body.profileId, model: body.model })
+    return { ...session, running: false }
+  })
+  route('POST', '/api/sessions/:id/answers/:questionId', ({ user, params, body }) => {
+    agent.answerQuestion(user!.id, params.id, params.questionId, String(body.answer ?? ''))
     return { ok: true }
   })
   route('POST', '/api/sessions/:id/cancel', ({ user, params }) => ({ cancelled: agent.cancel(user!.id, params.id) }))

@@ -55,9 +55,46 @@ shown in the UI, explicit effort (`high` by default; Opus 5.5's API default is `
 caching, and the Claude API's server-side refusal fallback (`fallbacks: "default"`), which you can
 turn off per profile.
 
+## Switching models
+
+Every session has a **model button** in the header (TUI: `/model`). It lists each of your profiles
+and the models that account can use (read live from the provider's Models API), plus a field for any
+other model id. You can switch at any time, including between providers:
+
+- Same account, different model: the native conversation history is kept.
+- Another account or provider: the history is rebuilt from the transcript (messages and a tool log),
+  because each provider's native format and the model's private reasoning can't be carried over.
+
+## Web access
+
+Each session has a **🌐 Web** toggle (TUI: `/web on|off`), on by default.
+
+- **Claude profiles** use Anthropic's built-in `web_search` / `web_fetch` server tools (the dynamic
+  filtering versions on current models). Anthropic bills web searches separately.
+- **Other providers** get client-side `web_search` and `web_fetch` tools. Search needs a backend,
+  which an admin sets in *Settings → Web search*: Brave Search API (key) or self-hosted SearXNG.
+- `web_fetch` blocks private and local network addresses (checked at connect time) and only opens
+  URLs that already appeared in the conversation (from you or from search results), which limits
+  how far a malicious page can steer the agent into leaking data.
+
+## Cards and progress
+
+- **Question cards** (`ask_user`): the agent asks you a question with clickable options or free text.
+- **Plan card** (`update_plan`): a live checklist with a progress bar, updated in place.
+- **Web cards**: what was searched or read, with the result links.
+- **Approval cards** for file changes and commands in Ask mode.
+- **Status bar** while a turn runs: what the agent is doing right now, the elapsed time, steps,
+  and plan progress. On Claude models that support it, the model's own short progress notes between
+  steps are shown too (`thinking.display: "updates"`).
+- **Notifications**: if the tab is in the background, the browser notifies you when approval or an
+  answer is needed and when the task finishes. TUI: `/status` at any time, a terminal bell for
+  approvals and questions, and the terminal title shows when a task is running.
+- A one-line **summary** after each turn: time taken, steps and tokens.
+
 ## Tools and approvals
 
-The agent has `read_file`, `list_dir`, `search`, `write_file`, `edit_file` and `run_command`.
+The agent has `read_file`, `list_dir`, `search`, `write_file`, `edit_file`, `run_command`,
+`ask_user`, `update_plan`, and the web tools above.
 File tools are confined to the session's workspace folder, and symlink escapes are blocked.
 In **Ask** mode every file change and command waits for your approval. **Auto** mode runs them
 without asking.
@@ -86,6 +123,8 @@ Layout:
 | `src/core/agent.ts` | runs turns, approvals, cancel, history rollback to the last consistent point |
 | `src/core/providers/` | `anthropic.ts` (official SDK, streaming tool loop), `openai.ts` (OpenAI-compatible) |
 | `src/core/tools.ts` | tool definitions (zod schemas → JSON Schema) |
+| `src/core/web.ts` | search backends, SSRF-safe page fetching, HTML → text |
+| `src/core/providers/models.ts` | model capability checks and live model lists |
 | `src/server/server.ts` | REST + SSE API and static GUI |
 | `src/tui/tui.ts`, `src/client/api.ts` | terminal client |
 | `web/` | browser GUI |

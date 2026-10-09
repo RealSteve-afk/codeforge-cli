@@ -18,6 +18,7 @@ export function openaiProvider(options: OpenAIOptions, client?: OpenAI): Provide
   const reasoningEffort = options.effort ? (options.effort === 'xhigh' || options.effort === 'max' ? 'high' : options.effort) : undefined
 
   return {
+    builtInWeb: false,
     async runTurn(userText: string, ctx: TurnContext): Promise<string> {
       const history = ctx.history as ChatMessage[]
       if (history.length === 0) history.push({ role: 'system', content: ctx.system })

@@ -3,7 +3,8 @@ import path from 'path'
 import readline from 'readline'
 import { ApiError, HarnessClient, type SessionView } from '../client/api'
 import type { AgentEvent } from '../core/providers/types'
-import type { PublicProfile, PublicUser, TranscriptItem } from '../core/store'
+import type { PublicProfile, PublicUser, TranscriptItem, WebHit } from '../core/store'
+import type { PlanItem } from '../core/tools'
 
 const c = {
   dim: (s: string) => `\x1b[2m${s}\x1b[22m`,
@@ -13,6 +14,7 @@ const c = {
   yellow: (s: string) => `\x1b[33m${s}\x1b[39m`,
   cyan: (s: string) => `\x1b[36m${s}\x1b[39m`,
   magenta: (s: string) => `\x1b[35m${s}\x1b[39m`,
+  blue: (s: string) => `\x1b[34m${s}\x1b[39m`,
 }
 
 interface TuiConfig {
@@ -24,6 +26,9 @@ interface TuiConfig {
 const HELP = `
 ${c.bold('Chat')}       type a message and press Enter. Ctrl+C cancels a running turn.
 ${c.bold('Sessions')}   /new [workspace-dir]   /sessions   /open <number|id>   /rename <title>   /delete
+${c.bold('Models')}     /model (pick from a list)   /model <profile> <model>   /models [profile]
+${c.bold('Web')}        /web on | off   (let the agent search and read the web)
+${c.bold('Progress')}   /status (what the agent is doing right now)   Ctrl+C stops a running turn
 ${c.bold('Approvals')}  /mode ask | auto   (ask = approve every file change and command)
 ${c.bold('Profiles')}   /profiles   /profile add   /profile rm <name>   /use <profile name>
 ${c.bold('Account')}    /whoami   /logout   /users   /user add   (admin)
@@ -36,6 +41,7 @@ export class Tui {
   private user?: PublicUser
   private session?: SessionView
   private running = false
+  private activity = { text: '', started: 0, steps: 0, plan: '' }
   private config: TuiConfig
 
   constructor(
@@ -198,7 +204,7 @@ export class Tui {
     const profiles = await this.client.profiles()
     const profile = profiles.find((p) => p.id === session.profileId)
     process.stdout.write(
-      `\n${c.bold(session.title)} ${c.dim(`· ${profile?.name ?? 'missing profile'} · ${session.model} · ${session.mode} mode`)}\n${c.dim(`workspace ${session.workspace}`)}\n`,
+      `\n${c.bold(session.title)} ${c.dim(`· ${profile?.name ?? 'missing profile'} · ${session.model} · ${session.mode} mode · web ${session.web === false ? 'off' : 'on'}`)}\n${c.dim(`workspace ${session.workspace}`)}\n`,
     )
     for (const item of session.transcript.slice(-30)) this.renderTranscript(item)
     if (session.running) await this.consume(this.client.attach(session.id))
@@ -227,6 +233,22 @@ export class Tui {
       case 'error':
         process.stdout.write(c.red(`✖ ${item.text}\n`))
         break
+      case 'progress':
+        process.stdout.write(c.dim(`▸ ${item.text.trim()}\n`))
+        break
+      case 'web':
+        process.stdout.write(formatWeb(item.action, item.query ?? item.url ?? ''))
+        if (item.results || item.error) process.stdout.write(formatWebResults(item.results, item.error))
+        break
+      case 'plan':
+        process.stdout.write(formatPlan(item.items))
+        break
+      case 'question':
+        process.stdout.write(c.cyan(`❓ ${item.question}\n`) + c.dim(`  → ${item.answer ?? 'no answer'}\n`))
+        break
+      case 'summary':
+        process.stdout.write(c.dim(`${formatSummary(item)}\n`))
+        break
     }
   }
 
@@ -244,6 +266,10 @@ export class Tui {
   private async onLine(line: string): Promise<void> {
     if (!line) return
     try {
+      if (this.running && !line.startsWith('/')) {
+        process.stdout.write(c.dim('\n(a turn is running — /status shows what it is doing, Ctrl+C stops it)\n'))
+        return
+      }
       if (line.startsWith('/')) await this.command(line)
       else await this.sendMessage(line)
     } catch (error) {
@@ -263,18 +289,26 @@ export class Tui {
 
   private async consume(events: AsyncGenerator<AgentEvent>): Promise<void> {
     this.running = true
-    let mode: 'text' | 'thinking' | 'none' = 'none'
-    const startBlock = (next: 'text' | 'thinking') => {
+    this.activity = { text: 'Starting…', started: Date.now(), steps: 0, plan: '' }
+    setTitle('● Forge Harness — working')
+    let mode: 'text' | 'thinking' | 'progress' | 'none' = 'none'
+    const startBlock = (next: 'text' | 'thinking' | 'progress') => {
       if (mode !== next) {
-        process.stdout.write(next === 'thinking' ? c.dim('\n✻ ') : '\n')
+        process.stdout.write(next === 'thinking' ? c.dim('\n✻ ') : next === 'progress' ? c.dim('\n▸ ') : '\n')
         mode = next
       }
     }
+    const hidden = new Set<string>()
     try {
       for await (const event of events) {
+        this.track(event)
         switch (event.type) {
           case 'thinking':
             startBlock('thinking')
+            process.stdout.write(c.dim(event.text))
+            break
+          case 'progress':
+            startBlock('progress')
             process.stdout.write(c.dim(event.text))
             break
           case 'text':
@@ -283,34 +317,132 @@ export class Tui {
             break
           case 'tool_call':
             mode = 'none'
+            if (event.name === 'update_plan' || event.name === 'ask_user') {
+              hidden.add(event.id)
+              break
+            }
+            if (event.name === 'web_search' || event.name === 'web_fetch') {
+              const input = (event.input ?? {}) as { query?: string; url?: string }
+              process.stdout.write(`\n${formatWeb(event.name === 'web_search' ? 'search' : 'fetch', input.query ?? input.url ?? '')}`)
+              break
+            }
             process.stdout.write(c.yellow(`\n⏺ ${event.name}(${summarizeInput(event.input)})\n`))
             break
           case 'tool_result':
-            process.stdout.write(formatResult(event.output, event.isError))
+            if (!hidden.has(event.id)) process.stdout.write(formatResult(event.output, event.isError))
             break
+          case 'web':
+            mode = 'none'
+            process.stdout.write(`\n${formatWeb(event.action, event.query ?? event.url ?? '')}`)
+            break
+          case 'web_result':
+            process.stdout.write(formatWebResults(event.results, event.error, event.title ?? event.url))
+            break
+          case 'plan':
+            mode = 'none'
+            process.stdout.write(`\n${formatPlan(event.items)}`)
+            break
+          case 'question': {
+            mode = 'none'
+            process.stdout.write(`\x07\n${c.cyan(c.bold(`❓ ${event.question}`))}\n`)
+            event.options.forEach((option, i) => process.stdout.write(`  ${c.bold(String(i + 1))}) ${option}\n`))
+            const raw = await this.ask(event.options.length ? '  Your answer (number or text)' : '  Your answer')
+            const answer = /^\d+$/.test(raw) && event.options[Number(raw) - 1] ? event.options[Number(raw) - 1] : raw
+            await this.client.answer(this.session!.id, event.questionId, answer)
+            break
+          }
           case 'approval': {
+            process.stdout.write('\x07')
             const answer = (await this.ask(c.yellow(`  Allow ${event.name}? [y]es / [n]o / [a]lways for this session`), { fallback: 'y' })).toLowerCase()
             const allow = answer.startsWith('y') || answer.startsWith('a')
             await this.client.approve(this.session!.id, event.approvalId, allow, answer.startsWith('a'))
             break
           }
           case 'notice':
+            mode = 'none'
             process.stdout.write(c.magenta(`\n• ${event.text}\n`))
             break
           case 'error':
+            mode = 'none'
             process.stdout.write(c.red(`\n✖ ${event.message}\n`))
             break
-          case 'usage':
+          case 'summary':
+            process.stdout.write(c.dim(`\n${formatSummary(event)}\n`))
             break
+          case 'status':
+          case 'usage':
           case 'done':
-            process.stdout.write(c.dim(`\n— ${event.stopReason}\n`))
             break
         }
       }
     } finally {
       this.running = false
+      setTitle('Forge Harness')
       if (this.session) this.session = await this.client.session(this.session.id).catch(() => this.session)
     }
+  }
+
+  // Keeps a one-line description of the current activity for /status.
+  private track(event: AgentEvent): void {
+    const a = this.activity
+    switch (event.type) {
+      case 'thinking': a.text = 'thinking'; break
+      case 'progress': a.text = event.text.trim().split('\n')[0] || a.text; break
+      case 'text': a.text = 'writing the answer'; break
+      case 'status': a.text = event.text; break
+      case 'tool_call': a.steps += 1; a.text = `running ${event.name} ${summarizeInput(event.input)}`; break
+      case 'web': a.steps += 1; a.text = event.action === 'search' ? `searching the web for “${event.query ?? ''}”` : `reading ${event.url ?? 'a page'}`; break
+      case 'approval': a.text = `waiting for your approval (${event.name})`; break
+      case 'question': a.text = 'waiting for your answer'; break
+      case 'plan': {
+        const done = event.items.filter((i) => i.status === 'done').length
+        const current = event.items.find((i) => i.status === 'in_progress')
+        a.plan = `plan ${done}/${event.items.length}${current ? ` — now: ${current.text}` : ''}`
+        break
+      }
+    }
+  }
+
+  private printStatus(): void {
+    if (!this.running) {
+      process.stdout.write('idle — nothing is running\n')
+      return
+    }
+    const seconds = Math.round((Date.now() - this.activity.started) / 1000)
+    process.stdout.write(
+      c.cyan(`⏳ ${this.activity.text} · ${formatDuration(seconds)} · ${this.activity.steps} steps${this.activity.plan ? ` · ${this.activity.plan}` : ''}\n`),
+    )
+  }
+
+  private async pickModel(args: string[]): Promise<void> {
+    if (!this.session) throw new Error('no session open')
+    const profiles = await this.client.profiles()
+    let profile: PublicProfile | undefined
+    let model: string | undefined
+    if (args.length) {
+      profile = profiles.find((p) => p.name === args[0])
+      if (profile) model = args[1]
+      else {
+        profile = profiles.find((p) => p.id === this.session!.profileId)
+        model = args[0]
+      }
+      if (!profile) throw new Error('no such profile; see /profiles')
+    } else {
+      profiles.forEach((p, i) => process.stdout.write(`  ${c.bold(String(i + 1))}) ${p.name} ${c.dim(`${p.provider} · default ${p.model}`)}\n`))
+      const pick = profiles[Number(await this.ask('Profile number', { fallback: String(profiles.findIndex((p) => p.id === this.session!.profileId) + 1) })) - 1]
+      if (!pick) throw new Error('no such profile')
+      profile = pick
+      const { models, error } = await this.client.models(pick.id)
+      const ids = Array.from(new Set([pick.model, ...models]))
+      ids.slice(0, 40).forEach((id, i) => process.stdout.write(`  ${c.bold(String(i + 1).padStart(2))}) ${id}${id === this.session!.model ? c.green(' ●') : ''}\n`))
+      if (ids.length > 40) process.stdout.write(c.dim(`  … ${ids.length - 40} more; type a model id to use one of them\n`))
+      if (error) process.stdout.write(c.dim(`  (${error})\n`))
+      const raw = await this.ask('Model number or id', { fallback: '1' })
+      model = /^\d+$/.test(raw) ? ids[Number(raw) - 1] : raw
+    }
+    const updated = await this.client.switchModel(this.session.id, profile.id, model)
+    this.session = { ...this.session, ...updated }
+    process.stdout.write(c.green(`now using ${profile.name} · ${updated.model}\n`))
   }
 
   private async command(line: string): Promise<void> {
@@ -363,6 +495,26 @@ export class Tui {
         delete this.config.lastSessionId
         this.session = undefined
         return this.newSession()
+      case 'status':
+        this.printStatus()
+        return
+      case 'model':
+        return this.pickModel(args)
+      case 'models': {
+        const profiles = await this.client.profiles()
+        const targets = rest ? profiles.filter((p) => p.name === rest) : profiles
+        if (!targets.length) throw new Error('no such profile; see /profiles')
+        for (const p of targets) {
+          const { models, error } = await this.client.models(p.id)
+          process.stdout.write(`${c.bold(p.name)} ${c.dim(p.provider)}\n${models.length ? models.map((m) => `  ${m}`).join('\n') : c.dim(`  ${error ?? 'no models listed'}`)}\n`)
+        }
+        return
+      }
+      case 'web':
+        if (!this.session || (rest !== 'on' && rest !== 'off')) throw new Error('usage: /web on | off')
+        this.session = { ...this.session, ...(await this.client.updateSession(this.session.id, { web: rest === 'on' })) }
+        process.stdout.write(`web access ${rest}\n`)
+        return
       case 'mode':
         if (!this.session || (rest !== 'ask' && rest !== 'auto')) throw new Error('usage: /mode ask | auto')
         this.session = { ...this.session, ...(await this.client.updateSession(this.session.id, { mode: rest })) }
@@ -430,6 +582,41 @@ export class Tui {
     process.stdout.write('\n')
     process.exit(0)
   }
+}
+
+function setTitle(title: string): void {
+  if (process.stdout.isTTY) process.stdout.write(`\x1b]0;${title}\x07`)
+}
+
+function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60)
+  return m ? `${m}m ${String(seconds % 60).padStart(2, '0')}s` : `${seconds}s`
+}
+
+function formatWeb(action: 'search' | 'fetch', target: string): string {
+  return c.blue(action === 'search' ? `🔎 searching the web: “${target}”\n` : `🌐 reading ${target}\n`)
+}
+
+function formatWebResults(results?: WebHit[], error?: string, page?: string): string {
+  if (error) return c.red(`  ⎿ ${error}\n`)
+  if (results) return results.slice(0, 5).map((r) => c.dim(`  ⎿ ${r.title ? `${r.title} — ` : ''}${r.url}\n`)).join('') || c.dim('  ⎿ no results\n')
+  return page ? c.dim(`  ⎿ ${page}\n`) : ''
+}
+
+function formatPlan(items: PlanItem[]): string {
+  const done = items.filter((i) => i.status === 'done').length
+  const lines = items.map((i) => {
+    const mark = i.status === 'done' ? c.green('✔') : i.status === 'in_progress' ? c.yellow('▶') : c.dim('○')
+    const text = i.status === 'done' ? c.dim(i.text) : i.status === 'in_progress' ? c.bold(i.text) : i.text
+    return `  ${mark} ${text}`
+  })
+  return `${c.bold(`📋 Plan ${done}/${items.length}`)}\n${lines.join('\n')}\n`
+}
+
+function formatSummary(s: { seconds: number; steps: number; stopReason: string; inputTokens: number; outputTokens: number }): string {
+  const icon = s.stopReason === 'cancelled' ? '⏹' : s.stopReason === 'error' || s.stopReason === 'refusal' ? '⚠' : '✓'
+  const tokens = s.inputTokens || s.outputTokens ? ` · ${s.inputTokens} in / ${s.outputTokens} out tokens` : ''
+  return `${icon} ${s.stopReason === 'cancelled' ? 'stopped' : 'finished'} in ${formatDuration(s.seconds)} · ${s.steps} steps${tokens}`
 }
 
 function readConfig(file: string): TuiConfig {

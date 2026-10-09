@@ -11,6 +11,7 @@ import { createServer, listen } from './server'
 
 // A scripted provider: asks to write a file, then answers with text.
 const scripted: Provider = {
+  builtInWeb: false,
   async runTurn(userText, ctx) {
     ctx.history.push({ role: 'user', content: userText })
     ctx.emit({ type: 'text', text: 'Writing the file. ' })
@@ -102,4 +103,37 @@ test('serves the web GUI with a strict content security policy', async () => {
   assert.match(res.headers.get('content-security-policy') ?? '', /script-src 'self'/)
   assert.match(await res.text(), /Forge Harness/)
   assert.equal((await fetch(`${base}/../package.json`)).status, 404)
+})
+
+test('web search settings are admin-only and secrets stay hidden', async () => {
+  const admin = new HarnessClient(base)
+  admin.token = (await admin.login('admin', 'password123')).token
+  const bob = new HarnessClient(base)
+  bob.token = (await bob.login('bob', 'password123')).token
+  const patch = (client: HarnessClient, body: unknown) =>
+    fetch(`${base}/api/settings`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${client.token}` }, body: JSON.stringify(body) })
+  assert.equal((await patch(bob, { search: { provider: 'none' } })).status, 403)
+  const res = await patch(admin, { search: { provider: 'brave', apiKey: 'brave-secret' } })
+  assert.equal(res.status, 200)
+  const text = await res.text()
+  assert.equal(text.includes('brave-secret'), false)
+  assert.deepEqual(JSON.parse(text), { search: { provider: 'brave', hasKey: true } })
+  assert.equal((await patch(admin, { search: { provider: 'searxng' } })).status, 400)
+})
+
+test('sessions can switch model and toggle web access', async () => {
+  const admin = new HarnessClient(base)
+  admin.token = (await admin.login('admin', 'password123')).token
+  const [claude] = await admin.profiles()
+  const local = await admin.createProfile({ name: 'ollama', provider: 'openai', model: 'qwen3', baseUrl: 'http://127.0.0.1:9/v1' })
+  const session = await admin.createSession({ profileId: claude.id, workspace: store.dataDir })
+  assert.equal(session.web, true)
+  assert.equal((await admin.updateSession(session.id, { web: false })).web, false)
+  const switched = await admin.switchModel(session.id, local.id, 'qwen3-coder')
+  assert.equal(switched.provider, 'openai')
+  assert.equal(switched.model, 'qwen3-coder')
+  // Listing models fails softly when the provider is unreachable.
+  const listed = await admin.models(local.id)
+  assert.deepEqual(listed.models, [])
+  assert.match(listed.error ?? '', /could not list models/)
 })

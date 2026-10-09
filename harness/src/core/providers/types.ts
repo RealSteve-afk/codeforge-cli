@@ -1,4 +1,5 @@
-import type { ToolDef } from '../tools'
+import type { PlanItem, ToolDef } from '../tools'
+import type { WebHit } from '../store'
 
 // Events streamed from a running turn to every attached client (GUI, TUI).
 export type AgentEvent =
@@ -11,6 +12,16 @@ export type AgentEvent =
   | { type: 'notice'; text: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'error'; message: string }
+  // Short notes the model writes between tool calls ("found X, now doing Y").
+  | { type: 'progress'; text: string }
+  // Ephemeral "what is happening right now" line; not saved in the transcript.
+  | { type: 'status'; text: string }
+  | { type: 'web'; id: string; action: 'search' | 'fetch'; query?: string; url?: string }
+  | { type: 'web_result'; id: string; results?: WebHit[]; url?: string; title?: string; error?: string }
+  | { type: 'plan'; items: PlanItem[] }
+  | { type: 'question'; questionId: string; question: string; options: string[]; allowText: boolean }
+  | { type: 'question_resolved'; questionId: string; answer: string }
+  | { type: 'summary'; seconds: number; steps: number; stopReason: string; inputTokens: number; outputTokens: number }
   | { type: 'done'; stopReason: string }
 
 export interface ToolCall {
@@ -36,9 +47,14 @@ export interface TurnContext {
   runTools(calls: ToolCall[]): Promise<ToolOutcome[]>
   emit(event: AgentEvent): void
   signal: AbortSignal
+  // Whether the user allowed web access for this session.
+  web: boolean
 }
 
 export interface Provider {
+  // True when the provider searches the web itself (server-side tools), so the
+  // agent should not add its own client-side web tools.
+  readonly builtInWeb: boolean
   // Runs one user turn through as many model/tool steps as needed and returns the final stop reason.
   runTurn(userText: string, ctx: TurnContext): Promise<string>
 }

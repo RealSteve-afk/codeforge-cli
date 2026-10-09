@@ -2,10 +2,23 @@ import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { z } from 'zod'
+import { fetchPage, normalizeUrl, searchWeb, type SearchConfig, WebError } from './web'
+
+export type PlanStatus = 'pending' | 'in_progress' | 'done'
+export interface PlanItem {
+  text: string
+  status: PlanStatus
+}
 
 export interface ToolContext {
   workspace: string
   signal: AbortSignal
+  // Interactive hooks supplied by the agent.
+  askUser?: (question: string, options: string[], allowText: boolean) => Promise<string>
+  updatePlan?: (items: PlanItem[]) => void
+  // Client-side web access (used by providers without built-in web tools).
+  search?: SearchConfig
+  urlAllowed?: (url: string) => boolean
 }
 
 export interface ToolDef {
@@ -205,10 +218,92 @@ const runCommand: ToolDef = {
   },
 }
 
-export const TOOLS: ToolDef[] = [readFile, listDir, search, writeFile, editFile, runCommand]
+const askUser: ToolDef = {
+  name: 'ask_user',
+  description:
+    'Ask the user a question and wait for the answer. Use it when you need a decision only the user can make (a choice between approaches, missing requirements). Offer 2-6 short options when the answer is a choice.',
+  schema: z.object({
+    question: z.string().min(1).describe('The question, in one or two sentences'),
+    options: z.array(z.string().min(1)).max(6).optional().describe('Suggested answers the user can click'),
+    allow_free_text: z.boolean().optional().describe('Whether the user may type their own answer (default true)'),
+  }),
+  mutates: false,
+  async run(input: { question: string; options?: string[]; allow_free_text?: boolean }, ctx) {
+    if (!ctx.askUser) throw new ToolError('asking the user is not available here')
+    const answer = await ctx.askUser(input.question, input.options ?? [], input.allow_free_text ?? true)
+    return answer ? `The user answered: ${answer}` : 'The user did not answer.'
+  },
+}
 
-export function findTool(name: string): ToolDef | undefined {
-  return TOOLS.find((tool) => tool.name === name)
+const updatePlan: ToolDef = {
+  name: 'update_plan',
+  description:
+    'Show the user a checklist of the steps for the current task and their status. Call it at the start of a task with three or more steps, and again whenever a step starts or finishes. Send the full list every time.',
+  schema: z.object({
+    items: z
+      .array(z.object({ text: z.string().min(1), status: z.enum(['pending', 'in_progress', 'done']) }))
+      .min(1)
+      .max(20),
+  }),
+  mutates: false,
+  async run(input: { items: PlanItem[] }, ctx) {
+    ctx.updatePlan?.(input.items)
+    const done = input.items.filter((i) => i.status === 'done').length
+    return `plan updated (${done}/${input.items.length} done)`
+  },
+}
+
+const webSearch: ToolDef = {
+  name: 'web_search',
+  description: 'Search the web. Returns titles, URLs and snippets. Use it for current information, documentation and facts you are unsure of.',
+  schema: z.object({ query: z.string().min(1).describe('Search query') }),
+  mutates: false,
+  async run(input: { query: string }, ctx) {
+    if (!ctx.search) throw new ToolError('web search is not configured')
+    try {
+      const results = await searchWeb(ctx.search, input.query)
+      if (!results.length) return 'no results'
+      return results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join('\n')
+    } catch (error) {
+      throw new ToolError((error as Error).message)
+    }
+  },
+}
+
+const webFetch: ToolDef = {
+  name: 'web_fetch',
+  description:
+    'Fetch a web page and return its readable text. Only URLs that the user gave or that appeared in earlier search results or tool output can be fetched.',
+  schema: z.object({ url: z.string().url().describe('The http(s) URL to fetch') }),
+  mutates: false,
+  async run(input: { url: string }, ctx) {
+    const url = normalizeUrl(input.url)
+    if (!url || (ctx.urlAllowed && !ctx.urlAllowed(url))) {
+      throw new ToolError('that URL has not appeared in this conversation; search for it first or ask the user for it')
+    }
+    try {
+      const page = await fetchPage(input.url, { signal: ctx.signal })
+      return `${page.title ? `# ${page.title}\n` : ''}${page.url}\n\n${page.text}`
+    } catch (error) {
+      throw new ToolError(error instanceof WebError ? error.message : `fetch failed: ${(error as Error).message}`)
+    }
+  },
+}
+
+export const TOOLS: ToolDef[] = [readFile, listDir, search, writeFile, editFile, runCommand]
+export const INTERACTIVE_TOOLS: ToolDef[] = [askUser, updatePlan]
+export const CLIENT_WEB_TOOLS: ToolDef[] = [webSearch, webFetch]
+const ALL_TOOLS = [...TOOLS, ...INTERACTIVE_TOOLS, ...CLIENT_WEB_TOOLS]
+
+// Tools offered to the model. Client-side web tools are only for providers
+// without built-in web search; web_search needs a configured backend.
+export function toolsFor(options: { clientWeb: boolean; searchConfigured: boolean }): ToolDef[] {
+  const web = options.clientWeb ? CLIENT_WEB_TOOLS.filter((t) => t.name !== 'web_search' || options.searchConfigured) : []
+  return [...TOOLS, ...INTERACTIVE_TOOLS, ...web]
+}
+
+export function findTool(name: string, tools: ToolDef[] = ALL_TOOLS): ToolDef | undefined {
+  return tools.find((tool) => tool.name === name)
 }
 
 // JSON Schema for a tool's input, without the "$schema" key the providers do not need.
