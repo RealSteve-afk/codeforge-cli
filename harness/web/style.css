@@ -226,8 +226,8 @@ dialog form { display: flex; flex-direction: column; gap: 12px; }
 @media (prefers-reduced-motion: reduce) { .spinner, .running-dot { animation: none; } }
 
 /* ---- interactive cards ---- */
-.progress-note { color: var(--muted); font-size: 14px; padding-left: 14px; position: relative; white-space: pre-wrap; }
-.progress-note::before { content: "▸"; position: absolute; left: 0; color: var(--accent); }
+.progress-note { color: var(--muted); font-size: 14px; padding-left: 18px; position: relative; white-space: pre-wrap; }
+.progress-note .icon { position: absolute; left: -2px; top: 4px; width: 14px; height: 14px; color: var(--accent); }
 .web-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 14px; background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
 .web-card .head { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
 .web-card .head span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -256,3 +256,25 @@ dialog form { display: flex; flex-direction: column; gap: 12px; }
   .statusbar { margin: 0 16px; }
   .web-toggle { padding: 8px 10px; }
 }
+
+/* ---- icons ---- */
+.icon { width: 16px; height: 16px; flex-shrink: 0; vertical-align: -3px; }
+button .icon { margin-right: 2px; }
+.icon-btn .icon { width: 18px; height: 18px; margin: 0; }
+button.wide, #open-settings, #logout, #stop, .web-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.logo-img { width: 22px; height: 22px; border-radius: 6px; }
+.logo-img.big { width: 52px; height: 52px; border-radius: 14px; }
+.tool summary .icon, .web-card .head .icon { color: var(--muted); }
+.web-card .head .icon { align-self: center; }
+.plan-card h4 .title, .question-card .q { display: flex; align-items: center; gap: 8px; }
+.plan-card h4 .icon, .question-card .q .icon { color: var(--accent); }
+.plan-card li { align-items: center; }
+.plan-card li .icon { color: var(--muted); }
+.plan-card li.done .icon { color: var(--ok); }
+.plan-card li.in_progress .icon { color: var(--accent); }
+.approval strong { display: flex; align-items: center; gap: 8px; }
+.summary-line { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.summary-line .icon { width: 14px; height: 14px; }
+.summary-line.ok .icon { color: var(--ok); }
+.summary-line.warn .icon { color: var(--danger); }
+.model-button .icon { width: 14px; height: 14px; }

@@ -387,7 +387,7 @@ function setRunning(running) {
   $('#send').classList.toggle('hidden', running)
   $('#stop').classList.toggle('hidden', !running)
   $('#statusbar').classList.toggle('hidden', !running)
-  document.title = running ? '● Forge Harness' : 'Forge Harness'
+  document.title = running ? 'Working · Forge Harness' : 'Forge Harness'
 }
 
 // Tracks what the agent is doing right now, for the status bar.
@@ -490,7 +490,7 @@ function askNotificationPermission() {
 
 function notify(title, body) {
   if (!document.hidden) return
-  document.title = `● ${title} — Forge Harness`
+  document.title = `${title} · Forge Harness`
   try {
     if ('Notification' in window && Notification.permission === 'granted') {
       const n = new Notification(title, { body: String(body || '').slice(0, 200), icon: 'icon.svg', tag: 'forge-harness' })
@@ -500,7 +500,7 @@ function notify(title, body) {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) document.title = state.running ? '● Forge Harness' : 'Forge Harness'
+  if (!document.hidden) document.title = state.running ? 'Working · Forge Harness' : 'Forge Harness'
 })
 
 function formatDuration(seconds) {
@@ -616,8 +616,10 @@ class TurnView {
   appendProgress(text) {
     if (!this.progressEl) {
       this.reset()
-      this.progressEl = el('div', { class: 'progress-note' })
-      this.box.append(this.progressEl)
+      const note = el('div', { class: 'progress-note' })
+      note.append(icon('chevron-right'), el('span'))
+      this.box.append(note)
+      this.progressEl = note.lastChild
     }
     this.progressEl.textContent += text
   }
@@ -636,7 +638,7 @@ class TurnView {
     }
     const card = el('details', { class: 'tool' })
     const summary = el('summary')
-    summary.append(el('span', { text: '⚙' }), el('span', { class: 'name', text: name }), el('span', { class: 'arg', text: summarize(input) }), el('span', { class: 'status', text: 'running…' }))
+    summary.append(icon(toolIcon(name)), el('span', { class: 'name', text: name }), el('span', { class: 'arg', text: summarize(input) }), el('span', { class: 'status', text: 'running…' }))
     card.append(summary, el('pre', { text: JSON.stringify(input, null, 2) }))
     this.box.append(card)
     this.tools.set(id, card)
@@ -671,7 +673,7 @@ class TurnView {
     const card = el('div', { class: 'web-card' })
     const head = el('div', { class: 'head' })
     head.append(
-      el('span', { text: ev.action === 'search' ? '🔎' : '🌐' }),
+      icon(ev.action === 'search' ? 'search' : 'globe'),
       el('strong', { text: ev.action === 'search' ? 'Searched the web' : 'Read a page' }),
       el('span', { class: 'muted', text: ev.action === 'search' ? (ev.query ? `“${ev.query}”` : '') : ev.url || '' }),
     )
@@ -707,11 +709,13 @@ class TurnView {
     }
     const done = items.filter((i) => i.status === 'done').length
     const head = el('h4')
-    head.append(el('span', { text: '📋 Plan' }), el('span', { class: 'muted small', text: `${done}/${items.length} done` }))
+    const title = el('span', { class: 'title' })
+    title.append(icon('list-checks'), 'Plan')
+    head.append(title, el('span', { class: 'muted small', text: `${done}/${items.length} done` }))
     const list = el('ol')
     for (const item of items) {
       const li = el('li', { class: item.status })
-      li.append(el('span', { text: item.status === 'done' ? '✅' : item.status === 'in_progress' ? '⏳' : '⬜' }), el('span', { text: item.text }))
+      li.append(icon(item.status === 'done' ? 'circle-check' : item.status === 'in_progress' ? 'circle-dot' : 'circle'), el('span', { text: item.text }))
       list.append(li)
     }
     const bar = el('div', { class: 'plan-bar' })
@@ -725,9 +729,14 @@ class TurnView {
   question(ev, answered) {
     this.reset()
     const card = el('div', { class: 'question-card' })
-    card.append(el('div', { class: 'q', text: `❓ ${ev.question}` }))
+    const heading = () => {
+      const q = el('div', { class: 'q' })
+      q.append(icon('circle-help'), ev.question)
+      return q
+    }
+    card.append(heading())
     const showAnswer = (answer) => {
-      card.replaceChildren(el('div', { class: 'q', text: `❓ ${ev.question}` }), el('div', { class: 'answer', text: answer ? `You answered: ${answer}` : 'No answer given.' }))
+      card.replaceChildren(heading(), el('div', { class: 'answer', text: answer ? `You answered: ${answer}` : 'No answer given.' }))
     }
     if (answered !== undefined) {
       showAnswer(answered)
@@ -761,16 +770,19 @@ class TurnView {
 
   summary(ev) {
     this.reset()
-    const icon = ev.stopReason === 'cancelled' ? '⏹' : ev.stopReason === 'error' || ev.stopReason === 'refusal' ? '⚠' : '✓'
+    const failed = ev.stopReason === 'error' || ev.stopReason === 'refusal'
+    const name = ev.stopReason === 'cancelled' ? 'circle-stop' : failed ? 'triangle-alert' : 'circle-check'
     const tokens = ev.inputTokens || ev.outputTokens ? ` · ${formatTokens(ev.inputTokens)} in / ${formatTokens(ev.outputTokens)} out` : ''
-    this.box.append(el('div', { class: 'summary-line', text: `${icon} ${ev.stopReason === 'cancelled' ? 'Stopped' : 'Finished'} in ${formatDuration(ev.seconds)} · ${ev.steps} step${ev.steps === 1 ? '' : 's'}${tokens}` }))
+    const line = el('div', { class: `summary-line ${failed ? 'warn' : 'ok'}` })
+    line.append(icon(name), `${ev.stopReason === 'cancelled' ? 'Stopped' : 'Finished'} in ${formatDuration(ev.seconds)} · ${ev.steps} step${ev.steps === 1 ? '' : 's'}${tokens}`)
+    this.box.append(line)
   }
 
   approval(ev) {
     this.reset()
     const box = el('div', { class: 'approval' })
     box.append(
-      el('strong', { text: `Allow ${ev.name}?` }),
+      (() => { const t = el('strong'); t.append(icon('shield-check'), `Allow ${ev.name}?`); return t })(),
       el('pre', { text: describeApproval(ev.name, ev.input) }),
     )
     const row = el('div', { class: 'row' })
@@ -799,6 +811,10 @@ function describeApproval(name, input) {
   if (name === 'write_file') return `${input.path}\n\n${String(input.content).slice(0, 2000)}${String(input.content).length > 2000 ? '\n…' : ''}`
   if (name === 'edit_file') return `${input.path}\n\n− ${String(input.old_string).split('\n').join('\n− ')}\n+ ${String(input.new_string).split('\n').join('\n+ ')}`
   return JSON.stringify(input, null, 2)
+}
+
+function toolIcon(name) {
+  return { run_command: 'terminal', write_file: 'pencil', edit_file: 'pencil', read_file: 'file-text', list_dir: 'folder', search: 'search' }[name] || 'wrench'
 }
 
 function link(url, text) {

@@ -67,7 +67,7 @@ other model id. You can switch at any time, including between providers:
 
 ## Web access
 
-Each session has a **🌐 Web** toggle (TUI: `/web on|off`), on by default.
+Each session has a **Web** toggle (TUI: `/web on|off`), on by default.
 
 - **Claude profiles** use Anthropic's built-in `web_search` / `web_fetch` server tools (the dynamic
   filtering versions on current models). Anthropic bills web searches separately.

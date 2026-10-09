@@ -59,7 +59,7 @@ export class Tui {
     }
     this.rl.on('SIGINT', () => {
       if (this.running && this.session) {
-        process.stdout.write(c.yellow('\n⏹  cancelling…\n'))
+        process.stdout.write(c.yellow('\n■ cancelling…\n'))
         void this.client.cancel(this.session.id).catch(() => undefined)
       } else {
         this.quit()
@@ -222,7 +222,7 @@ export class Tui {
         process.stdout.write(c.dim(`✻ ${item.text.slice(0, 300)}${item.text.length > 300 ? '…' : ''}\n`))
         break
       case 'tool_call':
-        process.stdout.write(c.yellow(`⏺ ${item.name}(${summarizeInput(item.input)})\n`))
+        process.stdout.write(c.yellow(`● ${item.name}(${summarizeInput(item.input)})\n`))
         break
       case 'tool_result':
         process.stdout.write(formatResult(item.output, item.isError))
@@ -231,7 +231,7 @@ export class Tui {
         process.stdout.write(c.magenta(`• ${item.text}\n`))
         break
       case 'error':
-        process.stdout.write(c.red(`✖ ${item.text}\n`))
+        process.stdout.write(c.red(`✗ ${item.text}\n`))
         break
       case 'progress':
         process.stdout.write(c.dim(`▸ ${item.text.trim()}\n`))
@@ -244,7 +244,7 @@ export class Tui {
         process.stdout.write(formatPlan(item.items))
         break
       case 'question':
-        process.stdout.write(c.cyan(`❓ ${item.question}\n`) + c.dim(`  → ${item.answer ?? 'no answer'}\n`))
+        process.stdout.write(c.cyan(`? ${item.question}\n`) + c.dim(`  → ${item.answer ?? 'no answer'}\n`))
         break
       case 'summary':
         process.stdout.write(c.dim(`${formatSummary(item)}\n`))
@@ -290,7 +290,7 @@ export class Tui {
   private async consume(events: AsyncGenerator<AgentEvent>): Promise<void> {
     this.running = true
     this.activity = { text: 'Starting…', started: Date.now(), steps: 0, plan: '' }
-    setTitle('● Forge Harness — working')
+    setTitle('Forge Harness — working')
     let mode: 'text' | 'thinking' | 'progress' | 'none' = 'none'
     const startBlock = (next: 'text' | 'thinking' | 'progress') => {
       if (mode !== next) {
@@ -326,7 +326,7 @@ export class Tui {
               process.stdout.write(`\n${formatWeb(event.name === 'web_search' ? 'search' : 'fetch', input.query ?? input.url ?? '')}`)
               break
             }
-            process.stdout.write(c.yellow(`\n⏺ ${event.name}(${summarizeInput(event.input)})\n`))
+            process.stdout.write(c.yellow(`\n● ${event.name}(${summarizeInput(event.input)})\n`))
             break
           case 'tool_result':
             if (!hidden.has(event.id)) process.stdout.write(formatResult(event.output, event.isError))
@@ -344,7 +344,7 @@ export class Tui {
             break
           case 'question': {
             mode = 'none'
-            process.stdout.write(`\x07\n${c.cyan(c.bold(`❓ ${event.question}`))}\n`)
+            process.stdout.write(`\x07\n${c.cyan(c.bold(`? ${event.question}`))}\n`)
             event.options.forEach((option, i) => process.stdout.write(`  ${c.bold(String(i + 1))}) ${option}\n`))
             const raw = await this.ask(event.options.length ? '  Your answer (number or text)' : '  Your answer')
             const answer = /^\d+$/.test(raw) && event.options[Number(raw) - 1] ? event.options[Number(raw) - 1] : raw
@@ -364,7 +364,7 @@ export class Tui {
             break
           case 'error':
             mode = 'none'
-            process.stdout.write(c.red(`\n✖ ${event.message}\n`))
+            process.stdout.write(c.red(`\n✗ ${event.message}\n`))
             break
           case 'summary':
             process.stdout.write(c.dim(`\n${formatSummary(event)}\n`))
@@ -410,7 +410,7 @@ export class Tui {
     }
     const seconds = Math.round((Date.now() - this.activity.started) / 1000)
     process.stdout.write(
-      c.cyan(`⏳ ${this.activity.text} · ${formatDuration(seconds)} · ${this.activity.steps} steps${this.activity.plan ? ` · ${this.activity.plan}` : ''}\n`),
+      c.cyan(`◷ ${this.activity.text} · ${formatDuration(seconds)} · ${this.activity.steps} steps${this.activity.plan ? ` · ${this.activity.plan}` : ''}\n`),
     )
   }
 
@@ -594,7 +594,7 @@ function formatDuration(seconds: number): string {
 }
 
 function formatWeb(action: 'search' | 'fetch', target: string): string {
-  return c.blue(action === 'search' ? `🔎 searching the web: “${target}”\n` : `🌐 reading ${target}\n`)
+  return c.blue(action === 'search' ? `⌕ searching the web: “${target}”\n` : `↗ reading ${target}\n`)
 }
 
 function formatWebResults(results?: WebHit[], error?: string, page?: string): string {
@@ -606,15 +606,15 @@ function formatWebResults(results?: WebHit[], error?: string, page?: string): st
 function formatPlan(items: PlanItem[]): string {
   const done = items.filter((i) => i.status === 'done').length
   const lines = items.map((i) => {
-    const mark = i.status === 'done' ? c.green('✔') : i.status === 'in_progress' ? c.yellow('▶') : c.dim('○')
+    const mark = i.status === 'done' ? c.green('✓') : i.status === 'in_progress' ? c.yellow('▸') : c.dim('○')
     const text = i.status === 'done' ? c.dim(i.text) : i.status === 'in_progress' ? c.bold(i.text) : i.text
     return `  ${mark} ${text}`
   })
-  return `${c.bold(`📋 Plan ${done}/${items.length}`)}\n${lines.join('\n')}\n`
+  return `${c.bold(`≡ Plan ${done}/${items.length}`)}\n${lines.join('\n')}\n`
 }
 
 function formatSummary(s: { seconds: number; steps: number; stopReason: string; inputTokens: number; outputTokens: number }): string {
-  const icon = s.stopReason === 'cancelled' ? '⏹' : s.stopReason === 'error' || s.stopReason === 'refusal' ? '⚠' : '✓'
+  const icon = s.stopReason === 'cancelled' ? '■' : s.stopReason === 'error' || s.stopReason === 'refusal' ? '!' : '✓'
   const tokens = s.inputTokens || s.outputTokens ? ` · ${s.inputTokens} in / ${s.outputTokens} out tokens` : ''
   return `${icon} ${s.stopReason === 'cancelled' ? 'stopped' : 'finished'} in ${formatDuration(s.seconds)} · ${s.steps} steps${tokens}`
 }
