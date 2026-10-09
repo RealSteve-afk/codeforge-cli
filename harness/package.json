@@ -1,0 +1,30 @@
+{
+  "name": "forge-harness",
+  "version": "0.1.0",
+  "description": "Multi-user, multi-provider LLM coding-agent harness with a TUI, a web GUI and a desktop app.",
+  "license": "MIT",
+  "private": true,
+  "type": "commonjs",
+  "bin": {
+    "harness": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js serve",
+    "tui": "node dist/cli.js tui",
+    "test": "tsc && node --test \"dist/**/*.test.js\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.1",
+    "openai": "^7.31.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.3"
+  }
+}

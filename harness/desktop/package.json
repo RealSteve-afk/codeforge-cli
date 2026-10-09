@@ -1,0 +1,13 @@
+{
+  "name": "forge-harness-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop window for Forge Harness (runs the engine inside the app).",
+  "main": "main.js",
+  "scripts": {
+    "start": "npm --prefix .. run build && electron ."
+  },
+  "devDependencies": {
+    "electron": "^44.7.0"
+  }
+}

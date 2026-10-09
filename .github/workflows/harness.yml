@@ -1,0 +1,29 @@
+name: Harness
+
+on:
+  pull_request:
+    paths: ['harness/**', '.github/workflows/harness.yml']
+  push:
+    branches: [main]
+    paths: ['harness/**', '.github/workflows/harness.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Harness test and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: harness
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: harness/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
